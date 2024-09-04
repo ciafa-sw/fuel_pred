@@ -1,7 +1,9 @@
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union, Callable
+import warnings
 
 import numpy as np
 import pandas as pd
+from sklearn.base import RegressorMixin
 
 # get all days between 2 dates
 # get the last day of the month of a given date
@@ -14,6 +16,12 @@ def get_days_between_dates(start_date, end_date):
 def dates_in_list(dates, date_list):
     return dates[[date in date_list for date in dates]]
 
+def create_range_until_month_end(day: pd.Timestamp) -> pd.DatetimeIndex:
+    '''
+    This function will take in a day and return a range of business days from that day until the end of the month.
+    '''
+    month_ends = get_last_day_of_month(day)
+    return pd.date_range(day, month_ends, freq='B')
 
 def get_X_y_for_day(data: pd.DataFrame, day: pd.Timestamp,
                     window_size: int=30, max_horizon: int = 15,
@@ -91,7 +99,54 @@ def create_features_and_targets(data: pd.DataFrame, max_horizon: int=10,
 
 
 
+def create_features_for_month(data: pd.DataFrame, prediction_day: pd.Timestamp, window_size: int=30) -> pd.DataFrame:
+    '''
+    This function will take in data as a Pandas DataFrame with datetime index.
+    It will also take a mask that has True on the days that we wish to predict.
+    It will return the features with the window_size specified.
+    '''
+    assert isinstance(prediction_day, pd.Timestamp), f'prediction_day must be a string or a pd.Timestamp, got {type(prediction_day)}'
+    
 
+    expected_start = prediction_day - pd.offsets.BDay(window_size)
+    expected_dt_range = pd.date_range(start=expected_start, end=prediction_day - pd.offsets.BDay(1), freq='B')
+
+    # assert 30 days in expected_dt_range
+    assert len(expected_dt_range) == window_size, f'Expected 30 days in the expected range, got {len(expected_dt_range)}'
+
+    iloc_pred = data.index.get_loc(prediction_day)
+    X = data.iloc[iloc_pred-window_size:iloc_pred]
+
+    assert len(X) == window_size, f'Expected 30 days in the data fetched range, got {len(X)}'
+
+    # send warning if start date of expected is different from one fethed from data
+    
+    if not X.index.equals(expected_dt_range):
+        # compute the first date that is different, starting from end
+        for i, (expected, fetched) in enumerate(zip(expected_dt_range[::-1], X.index[::-1])):
+            if expected != fetched:
+                break
+        warnings.warn(f'Expected date range is different from fetched data. The first different dates are {expected} vs. {fetched}.')
+
+    return X
+
+
+
+
+
+def create_targets_for_month(data: pd.DataFrame, prediction_day: pd.Timestamp) -> pd.DataFrame:
+    month_ends = get_last_day_of_month(prediction_day)
+    y = data.loc[prediction_day:month_ends].iloc[:, 0]
+
+    expect_future_range = create_range_until_month_end(prediction_day)
+    
+    if not y.index.equals(expect_future_range):
+        # compute the first date that is different, starting from end
+        for i, (expected, fetched) in enumerate(zip(expect_future_range[::-1], y.index[::-1])):
+            if expected != fetched:
+                break
+        warnings.warn(f'Expected future date range is different from fetched data. The first different dates are {expected} vs. {fetched}.')
+    return y
 
 def create_features_and_targets_for_month(data: pd.DataFrame, prediction_day: pd.DatetimeIndex, window_size: int=30, target_column: int = 0) -> Tuple[np.array, np.array, pd.DatetimeIndex]:
     '''
@@ -101,41 +156,63 @@ def create_features_and_targets_for_month(data: pd.DataFrame, prediction_day: pd
     It will return the features and targets for the days we wish to predict.
     '''
 
-    month_ends = get_last_day_of_month(prediction_day)
-
-    iloc_pred = data.index.get_loc(prediction_day)
-
-    X = data.iloc[iloc_pred-window_size:iloc_pred]
-
-    y = data.loc[prediction_day:month_ends].iloc[:, 0]
+    X = create_features_for_month(data, prediction_day, window_size)
+    y = create_targets_for_month(data, prediction_day)
 
     return X.values, y.values, y.index
 
 
-def predict_until_end(models, data, prediction_day, window_size, target_column, xscaler, yscaler):
+def predict_until_month_end(models: Dict[int, RegressorMixin], X, prediction_day) -> pd.DataFrame:
+    future_days = create_range_until_month_end(prediction_day)
+    ys = []
+    for h in range(0, len(future_days)):
+        model = models[h] # get model for that horizon
+        # assert number of features is the same as the model
+        assert len(X) == model.input_shape[1], f'Expected {model.input_shape[1]} features, got {len(X)}'
+        y = model.predict(X) 
+        ys.append(y)
+
+    return pd.DataFrame(ys, index=future_days)
+    
+
+def predict_until_end(models: Dict[int, RegressorMixin], data: pd.DataFrame, prediction_day: Union[str, pd.Timestamp],
+                      window_size: int, target_column: int):
+    # prediction days
+    future_days = create_range_until_month_end(prediction_day)
+    if len(future_days) > max(models.keys()):
+        raise ValueError(f'The greatest prediciton horizon is {max(models.keys())}, but there are {len(future_days)} business days to predict until the end of the month, since {prediction_day}.')
+
     X, y, dt = create_features_and_targets_for_month(data, prediction_day, window_size, target_column)
 
-    X = xscaler.transform(X).flatten()
+    X = X.flatten()
 
     ys = []
     for h in range(0, len(y)):
         model = models[h]
         ys.append(model.predict(X.reshape(1,-1)))
-    ys = yscaler.inverse_transform(np.array(ys))
-    return y, ys, dt
 
-def predict_month_avg(prediction_day, models, data, window_size, target_column, xscaler, yscaler):
-    y, ys, dt = predict_until_end(models, data, prediction_day, window_size, target_column, xscaler, yscaler)
+    return y, np.array(ys).flatten(), dt
 
-    month_begins = prediction_day.replace(day=1)
-    month_ends = get_last_day_of_month(prediction_day)
 
-    historic_sum = data.loc[month_begins:prediction_day].iloc[:, target_column].sum()
-    predicted_sum = ys.sum()
 
-    
+def predict_month_avg(models: Dict[int, RegressorMixin], data: pd.DataFrame, prediction_day: Union[str, pd.Timestamp], window_size, target_column) -> float:
+    prediction_day = pd.Timestamp(prediction_day)
 
-    return (historic_sum + predicted_sum) / len(data.loc[month_begins:month_ends])
+    # check that prediction_day is a business day
+    #month_business_days = pd.date_range(prediction_day, get_last_day_of_month(prediction_day), freq='B')
+    #assert prediction_day in month_business_days, f'prediction_day must be a business day, got {prediction_day}'
+
+
+    y, ys, dt = predict_until_end(models, data, prediction_day, window_size, target_column)
+
+    month_begins = pd.Timestamp(prediction_day).replace(day=1)
+    month_prices = data.loc[month_begins:prediction_day].iloc[:, target_column]
+
+    predicted_prices = ys
+
+    n_days = len(month_prices) + len(predicted_prices)
+
+    return (month_prices.sum() + predicted_prices.sum()) / n_days
 
 
 def create_features_and_targets_on_days_for_month(data: pd.DataFrame, prediction_days: pd.DatetimeIndex, window_size: int=30, target_column: int = 0) -> Tuple[np.array, np.array]:
