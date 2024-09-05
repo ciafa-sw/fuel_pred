@@ -162,11 +162,11 @@ def create_features_and_targets_for_month(data: pd.DataFrame, prediction_day: pd
     return X.values, y.values, y.index
 
 
-def predict_until_month_end(models: Dict[int, RegressorMixin], X, prediction_day) -> pd.DataFrame:
+def predict_until_month_end(models: Dict[int, Tuple[int, RegressorMixin]], X, prediction_day) -> pd.DataFrame:
     future_days = create_range_until_month_end(prediction_day)
     ys = []
     for h in range(0, len(future_days)):
-        model = models[h] # get model for that horizon
+        window_size, model = models[h] # get model for that horizon
         # assert number of features is the same as the model
         assert len(X) == model.input_shape[1], f'Expected {model.input_shape[1]} features, got {len(X)}'
         y = model.predict(X) 
@@ -175,27 +175,33 @@ def predict_until_month_end(models: Dict[int, RegressorMixin], X, prediction_day
     return pd.DataFrame(ys, index=future_days)
     
 
-def predict_until_end(models: Dict[int, RegressorMixin], data: pd.DataFrame, prediction_day: Union[str, pd.Timestamp],
-                      window_size: int, target_column: int):
+def predict_until_end(models: Dict[int, Tuple[int, RegressorMixin]], data: pd.DataFrame, prediction_day: Union[str, pd.Timestamp], target_column: int):
     # prediction days
     future_days = create_range_until_month_end(prediction_day)
     if len(future_days) > max(models.keys()):
         raise ValueError(f'The greatest prediciton horizon is {max(models.keys())}, but there are {len(future_days)} business days to predict until the end of the month, since {prediction_day}.')
 
-    X, y, dt = create_features_and_targets_for_month(data, prediction_day, window_size, target_column)
+    y = create_targets_for_month(data, prediction_day)
+    y, dt = y.values, y.index
 
-    X = X.flatten()
+    #X, y, dt = create_features_and_targets_for_month(data, prediction_day, window_size, target_column)
+
+    
 
     ys = []
     for h in range(0, len(y)):
-        model = models[h]
+        window_size, model = models[h]
+
+        X = create_features_for_month(data, prediction_day, window_size).values
+        X = X.flatten()
+
         ys.append(model.predict(X.reshape(1,-1)))
 
     return y, np.array(ys).flatten(), dt
 
 
 
-def predict_month_avg(models: Dict[int, RegressorMixin], data: pd.DataFrame, prediction_day: Union[str, pd.Timestamp], window_size, target_column) -> float:
+def predict_month_avg(models: Dict[int, Tuple[int, RegressorMixin]], data: pd.DataFrame, prediction_day: Union[str, pd.Timestamp], target_column) -> float:
     prediction_day = pd.Timestamp(prediction_day)
 
     # check that prediction_day is a business day
@@ -203,7 +209,7 @@ def predict_month_avg(models: Dict[int, RegressorMixin], data: pd.DataFrame, pre
     #assert prediction_day in month_business_days, f'prediction_day must be a business day, got {prediction_day}'
 
 
-    y, ys, dt = predict_until_end(models, data, prediction_day, window_size, target_column)
+    y, ys, dt = predict_until_end(models, data, prediction_day, target_column)
 
     month_begins = pd.Timestamp(prediction_day).replace(day=1)
     month_prices = data.loc[month_begins:prediction_day].iloc[:, target_column]
