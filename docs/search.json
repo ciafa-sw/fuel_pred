@@ -1,0 +1,9 @@
+[
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "Aplicação de Machine Learning na Previsão e Redução de Custos com Combustível na Força Aérea Portuguesa",
+    "section": "",
+    "text": "A previsão do preço de combustível a curto prazo possibilita a optimização orçamental da sua aquisição. Com este trabalho, explorou-se como é que os modelos de regressão e classificação, alimentados por séries temporais de preços de combustível, e outras variáveis, podem ser utilizados para otimizar o momento das compras de combustível.\nEste repositório contém o código fonte do modelo de previsão de preços de combustível a curto prazo, modelo de classificação e modelo de compra, desenvolvidos no âmbito do Trabalho Final de Mestrado do Alferes Afonso Lamelas, com o título “Aplicação de Machine Learning na Previsão e Redução de Custos com Combustível na Força Aérea Portuguesa”, no Instituto Superior de Economia e Gestão da Universidade de Lisboa.\nLink para repositório GitHub"
+  }
+]
